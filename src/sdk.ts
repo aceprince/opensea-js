@@ -27,7 +27,7 @@ import {
   getPrivateListingConsiderations,
   getPrivateListingFulfillments,
 } from "./orders/privateListings";
-import { OrderV2, PostOfferResponse } from "./orders/types";
+import { OrderV2, PostOfferResponse, BuildOfferResponse } from "./orders/types";
 import { DEFAULT_SEAPORT_CONTRACT_ADDRESS } from "./orders/utils";
 import {
   ERC1155__factory,
@@ -55,6 +55,8 @@ import {
   getAddressAfterRemappingSharedStorefrontAddressToLazyMintAdapterAddress,
   feesToBasisPoints,
   isValidProtocol,
+  assetFromJSON,
+  collectionFromJSON,
 } from "./utils/utils";
 
 export class OpenSeaSDK {
@@ -308,6 +310,84 @@ export class OpenSeaSDK {
     }));
   }
 
+  public async nfteyeBuildCreateBuyOrderData({
+    asset,
+    accountAddress,
+    startAmount,
+    quantity = 1,
+    domain,
+    salt,
+    expirationTime,
+    paymentTokenAddress,
+    openseaAsset,
+  }: {
+    asset: Asset;
+    accountAddress: string;
+    startAmount: BigNumberish;
+    quantity?: BigNumberish;
+    domain?: string;
+    salt?: string;
+    expirationTime?: BigNumberish;
+    paymentTokenAddress?: string;
+    openseaAsset: OpenSeaAsset;
+  }) {
+    if (!asset.tokenId) {
+      throw new Error("Asset must have a tokenId");
+    }
+    paymentTokenAddress =
+      paymentTokenAddress ?? WETH_ADDRESS_BY_NETWORK[this.chain];
+
+    openseaAsset = assetFromJSON(openseaAsset);
+
+    const considerationAssetItems = this.getAssetItems(
+      [openseaAsset],
+      [BigNumber.from(quantity ?? 1)]
+    );
+
+    const { basePrice } = await this._getPriceParameters(
+      OrderSide.Buy,
+      paymentTokenAddress,
+      expirationTime ?? getMaxOrderExpirationTimestamp(),
+      startAmount
+    );
+
+    const { openseaSellerFees, collectionSellerFees: collectionSellerFees } =
+      await this.getFees({
+        collection: openseaAsset.collection,
+        paymentTokenAddress,
+        startAmount: basePrice,
+      });
+    const considerationFeeItems = [
+      ...openseaSellerFees,
+      ...collectionSellerFees,
+    ];
+
+    const { executeAllActions } = await this.seaport_v1_5.createOrder(
+      {
+        offer: [
+          {
+            token: paymentTokenAddress,
+            amount: basePrice.toString(),
+          },
+        ],
+        consideration: [...considerationAssetItems, ...considerationFeeItems],
+        endTime:
+          expirationTime !== undefined
+            ? BigNumber.from(expirationTime).toString()
+            : getMaxOrderExpirationTimestamp().toString(),
+        zone: DEFAULT_ZONE_BY_NETWORK[this.chain],
+        domain,
+        salt: BigNumber.from(salt ?? 0).toString(),
+        restrictedByZone: false,
+        allowPartialFills: true,
+      },
+      accountAddress
+    );
+    const order = await executeAllActions();
+
+    return order;
+  }
+
   /**
    * Create a buy order to make an offer on an asset.
    * @param options Options for creating the buy order
@@ -502,6 +582,88 @@ export class OpenSeaSDK {
       protocolAddress: DEFAULT_SEAPORT_CONTRACT_ADDRESS,
       side: "ask",
     });
+  }
+
+  /**
+   * Create a collection offer
+   */
+  public async nfteyeBuildCollectionOfferData({
+    accountAddress,
+    amount,
+    domain,
+    salt,
+    expirationTime,
+    paymentTokenAddress,
+    collectionData,
+    buildOfferResult,
+  }: {
+    accountAddress: string;
+    amount: string;
+    domain?: string;
+    salt?: string;
+    expirationTime?: BigNumberish;
+    paymentTokenAddress: string;
+    collectionData: OpenSeaCollection;
+    buildOfferResult: BuildOfferResponse;
+  }) {
+    const collection = collectionFromJSON(collectionData);
+
+    const item = buildOfferResult.partialParameters.consideration[0];
+
+    const convertedConsiderationItem = {
+      itemType: item.itemType,
+      token: item.token,
+      identifier: item.identifierOrCriteria,
+      amount: item.startAmount,
+    };
+
+    const { basePrice } = await this._getPriceParameters(
+      OrderSide.Buy,
+      paymentTokenAddress,
+      expirationTime ?? getMaxOrderExpirationTimestamp(),
+      amount
+    );
+    const { openseaSellerFees, collectionSellerFees: collectionSellerFees } =
+      await this.getFees({
+        collection,
+        paymentTokenAddress,
+        startAmount: basePrice,
+        endAmount: basePrice,
+      });
+
+    const considerationItems = [
+      convertedConsiderationItem,
+      ...openseaSellerFees,
+      ...collectionSellerFees,
+    ];
+
+    const payload = {
+      offerer: accountAddress,
+      offer: [
+        {
+          token: paymentTokenAddress,
+          amount: basePrice.toString(),
+        },
+      ],
+      consideration: considerationItems,
+      endTime:
+        expirationTime?.toString() ??
+        getMaxOrderExpirationTimestamp().toString(),
+      zone: buildOfferResult.partialParameters.zone,
+      domain,
+      salt: BigNumber.from(salt ?? 0).toString(),
+      restrictedByZone: true,
+      allowPartialFills: true,
+    };
+
+    const { executeAllActions } = await this.seaport_v1_5.createOrder(
+      payload,
+      accountAddress
+    );
+
+    const order = await executeAllActions();
+
+    return order;
   }
 
   /**
