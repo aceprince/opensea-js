@@ -606,6 +606,9 @@ export class OpenSeaSDK {
     collectionData: OpenSeaCollection;
     buildOfferResult: BuildOfferResponse;
   }) {
+    paymentTokenAddress =
+      paymentTokenAddress ?? WETH_ADDRESS_BY_NETWORK[this.chain];
+
     const collection = collectionFromJSON(collectionData);
 
     const item = buildOfferResult.partialParameters.consideration[0];
